@@ -3,94 +3,93 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const { ClerkExpressRequireAuth } = require('@clerk/clerk-sdk-node');
 
+// Load environment variables if needed (Vercel provides these automatically)
 const app = express();
 
-// Configure CORS - explicitly allow the frontend origin and common headers
+// 1. Permissive CORS for the specific frontend
+// This is crucial to fix the 403/Permission issues when the frontend calls the backend
 app.use(cors({
   origin: ['https://2141c91b-e21-frontend.vercel.app', 'http://localhost:5173'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   credentials: true
 }));
 
 app.use(express.json());
 
-// Database Connection Pattern for Vercel Serverless
+// 2. Database Connection (testdb)
 const connectDB = async () => {
   if (mongoose.connection.readyState >= 1) return;
   
   const dbUrl = process.env.DATABASE_URL;
   if (!dbUrl) {
-    console.error('DATABASE_URL is missing in environment variables');
-    throw new Error('Database configuration missing');
+    console.error('CRITICAL: DATABASE_URL is missing');
+    throw new Error('Database URL not configured');
   }
 
   try {
-    // Always use 'testdb' as the database name
     await mongoose.connect(dbUrl, {
       dbName: 'testdb',
       useNewUrlParser: true,
       useUnifiedTopology: true
     });
-    console.log('Connected to MongoDB (testdb)');
+    console.log('Connected to MongoDB: testdb');
   } catch (err) {
-    console.error('MongoDB connection failed:', err.message);
+    console.error('MongoDB Error:', err.message);
     throw err;
   }
 };
 
-// Middleware to ensure DB connectivity and log basic request info
+// 3. Middleware to ensure DB and log path
 app.use(async (req, res, next) => {
-  console.log(`${req.method} ${req.path}`);
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   try {
     await connectDB();
     next();
   } catch (err) {
-    res.status(503).json({
-      error: 'Database connection failed',
-      details: err.message
-    });
+    res.status(503).json({ error: 'Database connection failed', details: err.message });
   }
 });
 
-// Import Routes
+// 4. Routes
 const tripRoutes = require('./routes/tripRoutes');
 const groupRoutes = require('./routes/groupRoutes');
 const expenseRoutes = require('./routes/expenseRoutes');
 
-// Health Check
+// Public Health Check
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'online', 
-    timestamp: new Date().toISOString(),
-    env: process.env.NODE_ENV 
+    clerkKeySet: !!process.env.CLERK_SECRET_KEY,
+    dbStatus: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
   });
 });
 
-// Protected Routes with Clerk Auth
-// Note: Ensure CLERK_SECRET_KEY is set in Vercel environment variables
-app.use('/api/trips', ClerkExpressRequireAuth(), tripRoutes);
-app.use('/api/groups', ClerkExpressRequireAuth(), groupRoutes);
-app.use('/api/expenses', ClerkExpressRequireAuth(), expenseRoutes);
+// 5. Auth Protection Middleware
+// Ensure CLERK_SECRET_KEY is added to Vercel env vars
+// If Clerk is missing the key, it often returns a 403 or 401
+const authMiddleware = ClerkExpressRequireAuth({
+  // Optional: Explicitly pass secret key if not automatically detected
+  secretKey: process.env.CLERK_SECRET_KEY
+});
 
-// Global Error Handling (Catching 401/403 from Clerk or 500s)
+app.use('/api/trips', authMiddleware, tripRoutes);
+app.use('/api/groups', authMiddleware, groupRoutes);
+app.use('/api/expenses', authMiddleware, expenseRoutes);
+
+// 6. Global Error Handler
 app.use((err, req, res, next) => {
   if (err.message === 'Unauthenticated') {
-    console.warn('Authentication attempt failed: Missing or invalid token');
-    return res.status(401).json({ error: 'Unauthenticated', message: 'Sign in to access this feature' });
+    console.warn('Unauthorized access attempt to:', req.path);
+    return res.status(401).json({ error: 'Unauthenticated', message: 'You must be logged in to access this.' });
   }
   
-  if (err.status === 403 || err.message === 'Forbidden') {
-    console.warn('Forbidden access attempt to:', req.path);
-    return res.status(403).json({ error: 'Forbidden', message: 'You do not have permission to perform this action' });
-  }
-
-  console.error('Unhandled Error:', err);
-  res.status(500).json({
+  console.error('Internal Error:', err);
+  res.status(err.status || 500).json({
     error: 'Internal Server Error',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong on our end'
+    message: err.message || 'Something went wrong',
+    path: req.path
   });
 });
 
-// Export for Vercel Serverless
 module.exports = app;
