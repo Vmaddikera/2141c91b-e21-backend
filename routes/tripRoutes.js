@@ -6,18 +6,22 @@ const Trip = require('../models/Trip');
 router.post('/', async (req, res) => {
   try {
     const { from, to, transport, arrivalTime, duration } = req.body;
+    
+    // req.auth is provided by ClerkExpressRequireAuth
     const newTrip = new Trip({
       userId: req.auth.userId,
       from,
       to,
       transport,
       arrivalTime,
-      duration
+      duration: Number(duration) || 3
     });
+
     await newTrip.save();
     res.status(201).json(newTrip);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    console.error('Error creating trip:', err);
+    res.status(400).json({ error: 'Failed to create trip', details: err.message });
   }
 });
 
@@ -27,7 +31,7 @@ router.get('/', async (req, res) => {
     const trips = await Trip.find({ userId: req.auth.userId }).sort({ createdAt: -1 });
     res.json(trips);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to fetch trips', details: err.message });
   }
 });
 

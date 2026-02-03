@@ -73,7 +73,8 @@
     "express": "*",
     "cors": "*",
     "mongoose": "*",
-    "@clerk/clerk-sdk-node": "*"
+    "@clerk/clerk-sdk-node": "*",
+    "dotenv": "*"
   },
   "devDependencies": {
     "@eslint/js": "^9.33.0",
